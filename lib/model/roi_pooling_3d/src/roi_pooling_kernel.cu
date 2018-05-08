@@ -140,8 +140,8 @@ int ROIPoolForwardLaucher(
 
 __global__ void ROIPoolBackward(const int nthreads, const float* top_diff,
     const int* argmax_data, const int num_rois, const float spatial_scale,
-    const int height, const int width, const int channels,
-    const int pooled_height, const int pooled_width, float* bottom_diff,
+    const int depth, const int height, const int width, const int channels,
+    const int pooled_depth, const int pooled_height, const int pooled_width, float* bottom_diff,
     const float* bottom_rois) {
     CUDA_1D_KERNEL_LOOP(index, nthreads)
     {
@@ -152,6 +152,8 @@ __global__ void ROIPoolBackward(const int nthreads, const float* top_diff,
         n /= width;
         int h = n % height;
         n /= height;
+        int d = n % depth;
+        n /= depth;        
         int c = n % channels;
         n /= channels;
 
@@ -159,7 +161,7 @@ __global__ void ROIPoolBackward(const int nthreads, const float* top_diff,
         // Accumulate gradient over all ROIs that pooled this element
         for (int roi_n = 0; roi_n < num_rois; ++roi_n)
         {
-            const float* offset_bottom_rois = bottom_rois + roi_n * 5;
+            const float* offset_bottom_rois = bottom_rois + roi_n * 7;
             int roi_batch_ind = offset_bottom_rois[0];
             // Skip if ROI's batch index doesn't match n
             if (n != roi_batch_ind) {
@@ -168,17 +170,20 @@ __global__ void ROIPoolBackward(const int nthreads, const float* top_diff,
 
             int roi_start_w = round(offset_bottom_rois[1] * spatial_scale);
             int roi_start_h = round(offset_bottom_rois[2] * spatial_scale);
-            int roi_end_w = round(offset_bottom_rois[3] * spatial_scale);
-            int roi_end_h = round(offset_bottom_rois[4] * spatial_scale);
+            int roi_start_d = round(offset_bottom_rois[3] * spatial_scale);
+            int roi_end_w = round(offset_bottom_rois[4] * spatial_scale);
+            int roi_end_h = round(offset_bottom_rois[5] * spatial_scale);
+            int roi_end_d = round(offset_bottom_rois[6] * spatial_scale);
 
             // Skip if ROI doesn't include (h, w)
             const bool in_roi = (w >= roi_start_w && w <= roi_end_w &&
-                               h >= roi_start_h && h <= roi_end_h);
+                               h >= roi_start_h && h <= roi_end_h &&
+                               d >= roi_start_d && d <= roi_end_d);
             if (!in_roi) {
                 continue;
             }
 
-            int offset = roi_n * pooled_height * pooled_width * channels;
+            int offset = roi_n * pooled_depth * pooled_height * pooled_width * channels;
             const float* offset_top_diff = top_diff + offset;
             const int* offset_argmax_data = argmax_data + offset;
 
@@ -188,25 +193,33 @@ __global__ void ROIPoolBackward(const int nthreads, const float* top_diff,
             // Force malformed ROIs to be 1x1
             int roi_width = fmaxf(roi_end_w - roi_start_w + 1, 1);
             int roi_height = fmaxf(roi_end_h - roi_start_h + 1, 1);
+            int roi_depth = fmaxf(roi_end_d - roi_start_d + 1, 1);
 
-            float bin_size_h = (float)(roi_height) / (float)(pooled_height);
             float bin_size_w = (float)(roi_width) / (float)(pooled_width);
+            float bin_size_h = (float)(roi_height) / (float)(pooled_height);
+            float bin_size_d = (float)(roi_depth) / (float)(pooled_depth);
 
-            int phstart = floor((float)(h - roi_start_h) / bin_size_h);
-            int phend = ceil((float)(h - roi_start_h + 1) / bin_size_h);
             int pwstart = floor((float)(w - roi_start_w) / bin_size_w);
             int pwend = ceil((float)(w - roi_start_w + 1) / bin_size_w);
+            int phstart = floor((float)(h - roi_start_h) / bin_size_h);
+            int phend = ceil((float)(h - roi_start_h + 1) / bin_size_h);
+            int pdstart = floor((float)(d - roi_start_d) / bin_size_d);
+            int pdend = ceil((float)(d - roi_start_d + 1) / bin_size_d);            
 
-            phstart = fminf(fmaxf(phstart, 0), pooled_height);
-            phend = fminf(fmaxf(phend, 0), pooled_height);
             pwstart = fminf(fmaxf(pwstart, 0), pooled_width);
             pwend = fminf(fmaxf(pwend, 0), pooled_width);
+            phstart = fminf(fmaxf(phstart, 0), pooled_height);
+            phend = fminf(fmaxf(phend, 0), pooled_height);
+            pdstart = fminf(fmaxf(pdstart, 0), pooled_depth);
+            pdend = fminf(fmaxf(pdend, 0), pooled_depth);            
 
-            for (int ph = phstart; ph < phend; ++ph) {
-                for (int pw = pwstart; pw < pwend; ++pw) {
-                    if (offset_argmax_data[(c * pooled_height + ph) * pooled_width + pw] == index)
-                    {
-                        gradient += offset_top_diff[(c * pooled_height + ph) * pooled_width + pw];
+            for (int pd = pdstart; pd < pdend; ++pd) {
+                for (int ph = phstart; ph < phend; ++ph) {
+                    for (int pw = pwstart; pw < pwend; ++pw) {
+                        if (offset_argmax_data[((c * pooled_depth + pd) * pooled_height + ph) * pooled_width + pw] == index)
+                        {
+                            gradient += offset_top_diff[((c * pooled_depth + pd) * pooled_height + ph) * pooled_width + pw];
+                        }
                     }
                 }
             }
@@ -216,16 +229,16 @@ __global__ void ROIPoolBackward(const int nthreads, const float* top_diff,
 }
 
 int ROIPoolBackwardLaucher(const float* top_diff, const float spatial_scale, const int batch_size, const int num_rois,
-    const int height, const int width, const int channels, const int pooled_height,
+    const int depth, const int height, const int width, const int channels, const int pooled_depth, const int pooled_height,
     const int pooled_width, const float* bottom_rois,
     float* bottom_diff, const int* argmax_data, cudaStream_t stream)
 {
     const int kThreadsPerBlock = 1024;
-    int output_size = batch_size * height * width * channels;
+    int output_size = batch_size * depth * height * width * channels;
     cudaError_t err;
 
     ROIPoolBackward<<<(output_size + kThreadsPerBlock - 1) / kThreadsPerBlock, kThreadsPerBlock, 0, stream>>>(
-      output_size, top_diff, argmax_data, num_rois, spatial_scale, height, width, channels, pooled_height,
+      output_size, top_diff, argmax_data, num_rois, spatial_scale, depth, height, width, channels, pooled_depth, pooled_height,
       pooled_width, bottom_diff, bottom_rois);
 
     // dim3 blocks(DIVUP(output_size, kThreadsPerBlock),

@@ -13,7 +13,7 @@ int ROIPoolForwardLaucher(
 
 
 int ROIPoolBackwardLaucher(const float* top_diff, const float spatial_scale, const int batch_size, const int num_rois,
-    const int height, const int width, const int channels, const int pooled_height,
+    const int depth, const int height, const int width, const int channels, const int pooled_depth, const int pooled_height,
     const int pooled_width, const float* bottom_rois,
     float* bottom_diff, const int* argmax_data, cudaStream_t stream);
 
