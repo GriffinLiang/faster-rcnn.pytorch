@@ -72,17 +72,19 @@ int roi_pooling_backward_cuda(int pooled_depth, int pooled_height, int pooled_wi
     // {
     //     return 0;
     // }
+    // data depth
+    int data_depth = THCudaTensor_size(state, bottom_grad, 2);
     // data height
-    int data_height = THCudaTensor_size(state, bottom_grad, 2);
+    int data_height = THCudaTensor_size(state, bottom_grad, 3);
     // data width
-    int data_width = THCudaTensor_size(state, bottom_grad, 3);
+    int data_width = THCudaTensor_size(state, bottom_grad, 4);
     // Number of channels
     int num_channels = THCudaTensor_size(state, bottom_grad, 1);
 
     cudaStream_t stream = THCState_getCurrentStream(state);
     ROIPoolBackwardLaucher(
-        top_grad_flat, spatial_scale, batch_size, num_rois, data_height,
-        data_width, num_channels, pooled_height,
+        top_grad_flat, spatial_scale, batch_size, num_rois, data_depth, data_height,
+        data_width, num_channels, pooled_depth, pooled_height,
         pooled_width, rois_flat,
         bottom_grad_flat, argmax_flat, stream);
 
