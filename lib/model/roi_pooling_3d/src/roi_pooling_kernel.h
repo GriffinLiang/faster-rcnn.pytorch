@@ -6,8 +6,8 @@ extern "C" {
 #endif
 
 int ROIPoolForwardLaucher(
-    const float* bottom_data, const float spatial_scale, const int num_rois, const int height,
-    const int width, const int channels, const int pooled_height,
+    const float* bottom_data, const float spatial_scale, const int num_rois, const int depth, const int height,
+    const int width, const int channels, const int pooled_depth, const int pooled_height,
     const int pooled_width, const float* bottom_rois,
     float* top_data, int* argmax_data, cudaStream_t stream);
 
