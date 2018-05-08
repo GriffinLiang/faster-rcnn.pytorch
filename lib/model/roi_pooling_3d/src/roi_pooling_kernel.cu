@@ -22,8 +22,8 @@
        i += blockDim.x * gridDim.x)
 
 __global__ void ROIPoolForward(const int nthreads, const float* bottom_data,
-    const float spatial_scale, const int height, const int width,
-    const int channels, const int pooled_height, const int pooled_width,
+    const float spatial_scale, const int depth, const int height, const int width,
+    const int channels, const int pooled_depth, const int pooled_height, const int pooled_width,
     const float* bottom_rois, float* top_data, int* argmax_data)
 {
     CUDA_KERNEL_LOOP(index, nthreads)
@@ -38,33 +38,44 @@ __global__ void ROIPoolForward(const int nthreads, const float* bottom_data,
         // n /= channels;
         int pw = index % pooled_width;
         int ph = (index / pooled_width) % pooled_height;
-        int c  = (index / pooled_width / pooled_height) % channels;
-        int n  = index / pooled_width / pooled_height / channels;
+        int pd  = (index / pooled_width / pooled_height) % pooled_depth;
+        int c  = (index / pooled_width / pooled_height / pooled_depth) % channels;
+        int n  = index / pooled_width / pooled_height / pooled_depth / channels;
 
         // bottom_rois += n * 5;
-        int roi_batch_ind = bottom_rois[n * 5 + 0];
-        int roi_start_w = round(bottom_rois[n * 5 + 1] * spatial_scale);
-        int roi_start_h = round(bottom_rois[n * 5 + 2] * spatial_scale);
-        int roi_end_w = round(bottom_rois[n * 5 + 3] * spatial_scale);
-        int roi_end_h = round(bottom_rois[n * 5 + 4] * spatial_scale);
+        int roi_batch_ind = bottom_rois[n * 7 + 0];
+        int roi_start_w = round(bottom_rois[n * 7 + 1] * spatial_scale);
+        int roi_start_h = round(bottom_rois[n * 7 + 2] * spatial_scale);
+        int roi_start_d = round(bottom_rois[n * 7 + 3] * spatial_scale);
+        int roi_end_w = round(bottom_rois[n * 7 + 4] * spatial_scale);
+        int roi_end_h = round(bottom_rois[n * 7 + 5] * spatial_scale);
+        int roi_end_d = round(bottom_rois[n * 7 + 6] * spatial_scale);
 
         // Force malformed ROIs to be 1x1
         int roi_width = fmaxf(roi_end_w - roi_start_w + 1, 1);
         int roi_height = fmaxf(roi_end_h - roi_start_h + 1, 1);
-        float bin_size_h = (float)(roi_height) / (float)(pooled_height);
+        int roi_depth = fmaxf(roi_end_d - roi_start_d + 1, 1);
+        
         float bin_size_w = (float)(roi_width) / (float)(pooled_width);
+        float bin_size_h = (float)(roi_height) / (float)(pooled_height);        
+        float bin_size_d = (float)(roi_depth) / (float)(pooled_depth);
 
-        int hstart = (int)(floor((float)(ph) * bin_size_h));
         int wstart = (int)(floor((float)(pw) * bin_size_w));
-        int hend = (int)(ceil((float)(ph + 1) * bin_size_h));
+        int hstart = (int)(floor((float)(ph) * bin_size_h));
+        int dstart = (int)(floor((float)(pd) * bin_size_d));
         int wend = (int)(ceil((float)(pw + 1) * bin_size_w));
+        int hend = (int)(ceil((float)(ph + 1) * bin_size_h));
+        int dend = (int)(ceil((float)(pd + 1) * bin_size_d));
 
         // Add roi offsets and clip to input boundaries
+        wstart = fminf(fmaxf(wstart + roi_start_w, 0), width);
+        wend = fminf(fmaxf(wend + roi_start_w, 0), width);        
         hstart = fminf(fmaxf(hstart + roi_start_h, 0), height);
         hend = fminf(fmaxf(hend + roi_start_h, 0), height);
-        wstart = fminf(fmaxf(wstart + roi_start_w, 0), width);
-        wend = fminf(fmaxf(wend + roi_start_w, 0), width);
-        bool is_empty = (hend <= hstart) || (wend <= wstart);
+        dstart = fminf(fmaxf(dstart + roi_start_d, 0), depth);
+        dend = fminf(fmaxf(dend + roi_start_d, 0), depth);
+        
+        bool is_empty = (hend <= hstart) || (wend <= wstart) || (dend <= dstart);
 
         // Define an empty pooling region to be zero
         float maxval = is_empty ? 0 : -FLT_MAX;
@@ -72,17 +83,19 @@ __global__ void ROIPoolForward(const int nthreads, const float* bottom_data,
         int maxidx = -1;
         // bottom_data += roi_batch_ind * channels * height * width;
 
-        int bottom_data_batch_offset = roi_batch_ind * channels * height * width;
-        int bottom_data_offset = bottom_data_batch_offset + c * height * width;
+        int bottom_data_batch_offset = roi_batch_ind * channels * depth * height * width;
+        int bottom_data_offset = bottom_data_batch_offset + c * depth * height * width;
 
-        for (int h = hstart; h < hend; ++h) {
-            for (int w = wstart; w < wend; ++w) {
-                // int bottom_index = (h * width + w) * channels + c;
-                // int bottom_index = (c * height + h) * width + w;
-                int bottom_index = h * width + w;
-                if (bottom_data[bottom_data_offset + bottom_index] > maxval) {
-                    maxval = bottom_data[bottom_data_offset + bottom_index];
-                    maxidx = bottom_data_offset + bottom_index;
+        for (int d = dstart; d < dend; ++d) {
+            for (int h = hstart; h < hend; ++h) {
+                for (int w = wstart; w < wend; ++w) {
+                    // int bottom_index = (h * width + w) * channels + c;
+                    // int bottom_index = (c * height + h) * width + w;
+                    int bottom_index = d * height * width + h * width + w;
+                    if (bottom_data[bottom_data_offset + bottom_index] > maxval) {
+                        maxval = bottom_data[bottom_data_offset + bottom_index];
+                        maxidx = bottom_data_offset + bottom_index;
+                    }
                 }
             }
         }
@@ -93,17 +106,17 @@ __global__ void ROIPoolForward(const int nthreads, const float* bottom_data,
 }
 
 int ROIPoolForwardLaucher(
-    const float* bottom_data, const float spatial_scale, const int num_rois, const int height,
-    const int width, const int channels, const int pooled_height,
+    const float* bottom_data, const float spatial_scale, const int num_rois, const int depth, const int height,
+    const int width, const int channels, const int pooled_depth, const int pooled_height,
     const int pooled_width, const float* bottom_rois,
     float* top_data, int* argmax_data, cudaStream_t stream)
 {
     const int kThreadsPerBlock = 1024;
-    int output_size = num_rois * pooled_height * pooled_width * channels;
+    int output_size = num_rois * pooled_depth * pooled_height * pooled_width * channels;
     cudaError_t err;
 
     ROIPoolForward<<<(output_size + kThreadsPerBlock - 1) / kThreadsPerBlock, kThreadsPerBlock, 0, stream>>>(
-      output_size, bottom_data, spatial_scale, height, width, channels, pooled_height,
+      output_size, bottom_data, spatial_scale, depth, height, width, channels, pooled_depth, pooled_height,
       pooled_width, bottom_rois, top_data, argmax_data);
 
     // dim3 blocks(DIVUP(output_size, kThreadsPerBlock),
